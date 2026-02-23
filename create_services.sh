@@ -5,11 +5,12 @@ MODELS_PATH="$LLAMA_PATH/models"
 
 create_service() {
   local name=$1; local model=$2; local port=$3; local threads=$4; local extra=$5
-  # Optimizamos para Xeon Dual-Socket:
-  # - hilos de generación (threads)
-  # - hilos de batch (batch_threads) duplicados para saturar ancho de banda
-  local batch_threads=$(( threads * 2 ))
-  [ $batch_threads -gt 32 ] && batch_threads=32
+  
+  # Configuramos el chat-template por defecto si no se pasa en extra
+  local template_flag="--chat-template auto"
+  if [[ "$extra" == *"--chat-template"* ]]; then
+    template_flag=""
+  fi
 
   cat << EOF > /etc/systemd/system/$name.service
 [Unit]
@@ -22,64 +23,60 @@ WorkingDirectory=$LLAMA_PATH
 ExecStart=/usr/bin/numactl --interleave=all $BIN_PATH \\
   -m $MODELS_PATH/$model \\
   --port $port \\
-  -t $threads -tb $batch_threads \\
+  -t $threads -tb 16 \\
   --numa distribute \\
-  --prio 3 --prio-batch 3 \\
-  --poll 100 --poll-batch 100 \\
-  -b 4096 -ub 1024 \\
-  --kv-unified --no-warmup \\
-  --flash-attn on --mlock --no-mmap \\
-  --cache-type-k q8_0 --cache-type-v q8_0 \\
+  --prio 2 \\
+  --poll 50 \\
+  -b 2048 -ub 512 \\
+  --cont-batching \\
+  --kv-unified \\
+  --flash-attn on --no-mmap \\
+  --cache-type-k q4_0 --cache-type-v q4_0 \\
+  $template_flag \\
   $extra
 Restart=always
-RestartSec=10
-Nice=-20
-CPUSchedulingPolicy=fifo
-CPUSchedulingPriority=50
+RestartSec=15
+Nice=-10
+LimitMEMLOCK=infinity
+LimitNOFILE=65535
+TimeoutStartSec=600
 EOF
 }
 
+# --- DISTRIBUCIÓN DE PRODUCCIÓN ---
+# Ligeros (Siempre arriba)
+create_service "ia-1b" "qwen-1.7b.gguf" 8081 8 "-c 16384"
+create_service "ia-gemma" "codegemma-2b.gguf" 8082 8 "-c 16384"
 
+# Pesados (Ajustado Contexto para Estabilidad)
+create_service "ia-coder-raw" "qwen3-coder-abliterated.gguf" 8086 12 "-c 16384"
 
-# --- OPTIMIZACIÓN DE HILOS (Dual Xeon E5-2690 - 32 Logical CPUs) ---
-# Nota: Repartimos hilos asumiendo que no todos se usan al 100% simultáneamente.
-# Si la latencia sube mucho, bajar hilos de los modelos menos usados.
+# GLM-4 Optimización (Intento de rescate con ChatML)
+# Añadimos --special para que procese tokens de parada correctamente
+create_service "ia-glm4" "glm-4-flash.gguf" 8087 12 "-c 8192 --chat-template chatml --special --min-p 0.05 --temp 0.6"
 
-# Ligeros
-create_service "ia-1b" "qwen-1.7b.gguf" 8081 4 "-c 8192"
-create_service "ia-gemma" "codegemma-2b.gguf" 8082 4 "-c 8192"
+create_service "ia-qwen-vl" "qwen3-vl-thinking.gguf" 8088 12 "-c 8192"
+create_service "ia-14b-n8n" "qwen-14b-n8n.gguf" 8089 12 "-c 16384"
 
-# Coders y Pesados (Avanzado)
-create_service "ia-coder-raw" "qwen3-coder-abliterated.gguf" 8086 16 "-c 32768"
-create_service "ia-glm4" "glm-4-flash.gguf" 8087 10 "-c 16384"
-create_service "ia-qwen-vl" "qwen3-vl-thinking.gguf" 8088 12 "-c 32768"
-create_service "ia-14b-n8n" "qwen-14b-n8n.gguf" 8089 10 "-c 16384"
-
-echo "🔄 Reconfigurando servicios con optimizaciones de Caché y Flash Attention..."
+echo "🔄 Reconfigurando arquitectura para máxima estabilidad..."
 systemctl daemon-reload
 
-# --- ARRANQUE SECUENCIAL INTELIGENTE (Protección SATA SSD) ---
-services=("ia-1b" "ia-gemma" "ia-coder-raw" "ia-glm4" "ia-qwen-vl" "ia-14b-n8n")
+# --- ARRANQUE SECUENCIAL SELECTIVO ---
+# Solo arrancamos los ligeros por defecto para que el sistema sea usable de inmediato.
+# Los pesados se suben con 'ia subir <nombre>'
+services_light=("ia-1b" "ia-gemma")
+services_all=("ia-1b" "ia-gemma" "ia-coder-raw" "ia-glm4" "ia-qwen-vl" "ia-14b-n8n")
 
-# Aseguramos dependencias para iostat
-if ! command -v iostat &> /dev/null; then
-    apt-get install -y sysstat
-fi
-
-for srv in "${services[@]}"; do
-    echo "🚀 Iniciando $srv..."
+for srv in "${services_light[@]}"; do
+    echo "🚀 Iniciando modelo ligero: $srv..."
     systemctl restart $srv
-    
-    echo "⏳ Esperando estabilización de SSD (IO Delay < 15%)..."
-    # Bucle de espera: Lee el IO Wait y no avanza hasta que el disco esté libre
-    while true; do
-        iowait=$(iostat -c | awk '/^ /{print $4}' | cut -d. -f1)
-        if [ "$iowait" -lt 15 ]; then
-            echo "✅ Disco liberado (IO Wait: $iowait%). Siguiente modelo..."
-            break
-        fi
-        sleep 5
-    done
+    sleep 5
+done
+
+# Detenemos los pesados para liberar RAM y permitir limpieza de Proxmox
+for srv in "ia-coder-raw" "ia-glm4" "ia-qwen-vl" "ia-14b-n8n"; do
+    echo "💤 Dejando en standby (ahorro de RAM): $srv"
+    systemctl stop $srv
 done
 
 systemctl restart litellm

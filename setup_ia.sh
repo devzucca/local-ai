@@ -26,7 +26,7 @@ download_verified() {
     
     if [ ! -f "$file" ] || [ $(stat -c%s "$file") -lt $expected_min_size ]; then
         echo "Descargando $file..."
-        wget -c -L -O "$file" "$url"
+        curl -L -O "$file" "$url"
     else
         echo "✅ $file ya existe y tiene un tamaño válido."
     fi
@@ -41,6 +41,11 @@ download_verified "qwen3-coder-abliterated.gguf" "https://huggingface.co/bartows
 download_verified "glm-4-flash.gguf" "https://huggingface.co/unsloth/GLM-4.7-Flash-GGUF/resolve/main/GLM-4.7-Flash-Q4_K_M.gguf?download=true"
 download_verified "qwen3-vl-thinking.gguf" "https://huggingface.co/unsloth/Qwen3-VL-32B-Thinking-GGUF/resolve/main/Qwen3-VL-32B-Thinking-UD-Q6_K_XL.gguf?download=true"
 download_verified "qwen-14b-n8n.gguf" "https://huggingface.co/mbakgun/Qwen2.5-Coder-14B-n8n-Workflow-Generator/resolve/main/gguf/qwen25-coder-14b-n8n-q4_k_m.gguf?download=true"
+
+# Proyectores de Visión (Necesarios para procesar imágenes)
+# Usamos repositorios públicos verificados para evitar errores 401
+download_verified "ia-qwen-vl_mmproj.gguf" "https://huggingface.co/lmstudio-community/Qwen2-VL-7B-Instruct-GGUF/resolve/main/qwen2-vl-7b-instruct-mmproj-f16.gguf"
+download_verified "ia-glm4_mmproj.gguf" "https://huggingface.co/lmstudio-community/glm-4v-9b-GGUF/resolve/main/glm-4v-9b-mmproj-f16.gguf"
 
 echo "🏗️ 4. LiteLLM Setup..."
 cd /root
