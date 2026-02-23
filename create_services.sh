@@ -5,9 +5,12 @@ MODELS_PATH="$LLAMA_PATH/models"
 
 create_service() {
   local name=$1; local model=$2; local port=$3; local threads=$4; local extra=$5
-  # Calculamos hilos para batch (el doble de los hilos de generación, sin pasar de 20)
+  # Optimizamos para Xeon Dual-Socket:
+  # - hilos de generación (threads)
+  # - hilos de batch (batch_threads) duplicados para saturar ancho de banda
   local batch_threads=$(( threads * 2 ))
-  
+  [ $batch_threads -gt 32 ] && batch_threads=32
+
   cat << EOF > /etc/systemd/system/$name.service
 [Unit]
 Description=IA Service $name
@@ -20,30 +23,37 @@ ExecStart=/usr/bin/numactl --interleave=all $BIN_PATH \\
   -m $MODELS_PATH/$model \\
   --port $port \\
   -t $threads -tb $batch_threads \\
+  --numa distribute \\
+  --prio 3 --prio-batch 3 \\
+  --poll 100 --poll-batch 100 \\
+  -b 4096 -ub 1024 \\
+  --kv-unified --no-warmup \\
   --flash-attn on --mlock --no-mmap \\
   --cache-type-k q8_0 --cache-type-v q8_0 \\
   $extra
 Restart=always
 RestartSec=10
-Nice=-15
+Nice=-20
 CPUSchedulingPolicy=fifo
-CPUSchedulingPriority=40
+CPUSchedulingPriority=50
 EOF
 }
 
 
 
-# --- DISTRIBUCIÓN DE HILOS (Total 32) ---
-# Ligeros: Muy rápidos, pocos hilos.
-create_service "ia-1b" "qwen-1.7b.gguf" 8081 2 "-c 8192"
-create_service "ia-gemma" "codegemma-2b.gguf" 8082 2 "-c 8192"
+# --- OPTIMIZACIÓN DE HILOS (Dual Xeon E5-2690 - 32 Logical CPUs) ---
+# Nota: Repartimos hilos asumiendo que no todos se usan al 100% simultáneamente.
+# Si la latencia sube mucho, bajar hilos de los modelos menos usados.
 
-# Coders y Pesados
-# Nota: Quitamos '--numa distribute' y 'numactl --interleave' en el ExecStart.
-create_service "ia-coder-raw" "qwen3-coder-abliterated.gguf" 8086 8 "-c 32768"
-create_service "ia-glm4" "glm-4-flash.gguf" 8087 6 "-c 16384"
-create_service "ia-qwen-vl" "qwen3-vl-thinking.gguf" 8088 8 "-c 32768"
-create_service "ia-14b-n8n" "qwen-14b-n8n.gguf" 8089 6 "-c 16384"
+# Ligeros
+create_service "ia-1b" "qwen-1.7b.gguf" 8081 4 "-c 8192"
+create_service "ia-gemma" "codegemma-2b.gguf" 8082 4 "-c 8192"
+
+# Coders y Pesados (Avanzado)
+create_service "ia-coder-raw" "qwen3-coder-abliterated.gguf" 8086 16 "-c 32768"
+create_service "ia-glm4" "glm-4-flash.gguf" 8087 10 "-c 16384"
+create_service "ia-qwen-vl" "qwen3-vl-thinking.gguf" 8088 12 "-c 32768"
+create_service "ia-14b-n8n" "qwen-14b-n8n.gguf" 8089 10 "-c 16384"
 
 echo "🔄 Reconfigurando servicios con optimizaciones de Caché y Flash Attention..."
 systemctl daemon-reload
