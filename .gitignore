@@ -1,0 +1,14 @@
+# Ignorar binarios y modelos pesados
+llama.cpp/
+*.gguf
+*.bin
+*.log
+
+# Entornos virtuales
+litellm_env/
+venv/
+.venv/
+
+# Configuración sensible (si existiera localmente)
+.env
+litellm_config.yaml.bak

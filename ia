@@ -1,0 +1,152 @@
+#!/bin/bash
+# /usr/local/bin/ia - Gestor de Modelos Optimizado para Xeon Dual-Socket
+
+COMMAND=$1
+MODEL=$2
+
+# Mapeo de nombres cortos a nombres de servicio reales
+declare -A SRV_MAP=(
+    ["1b"]="ia-1b"
+    ["gemma"]="ia-gemma"
+    ["coder-raw"]="ia-coder-raw"
+    ["glm4"]="ia-glm4"
+    ["qwen-vl"]="ia-qwen-vl"
+    ["14b-n8n"]="ia-14b-n8n"
+)
+
+# Colores
+G='\033[0;32m'
+R='\033[0;31m'
+NC='\033[0m'
+
+# Función para obtener el nombre del servicio real
+get_service_name() {
+    local input=$1
+    # Si ya empieza con ia- (y está en nuestro mapa como valor)
+    for key in "${!SRV_MAP[@]}"; do
+        if [[ "$input" == "${SRV_MAP[$key]}" ]] || [[ "$input" == "${SRV_MAP[$key]}.service" ]]; then
+            echo "${SRV_MAP[$key]}"
+            return 0
+        fi
+    done
+    # Si es un nombre corto
+    if [[ -n "${SRV_MAP[$input]}" ]]; then
+        echo "${SRV_MAP[$input]}"
+        return 0
+    fi
+    return 1
+}
+
+case $COMMAND in
+    "lista")
+        echo -e "\n📋 Modelos de IA configurados:"
+        printf "%-15s %-25s %-10s\n" "ALIAS" "SERVICIO" "ESTADO"
+        echo "------------------------------------------------------------"
+        for alias in "1b" "gemma" "coder-raw" "glm4" "qwen-vl" "14b-n8n"; do
+            srv="${SRV_MAP[$alias]}"
+            status=$(systemctl is-active "$srv" 2>/dev/null || echo "inactive")
+            if [[ "$status" == "active" ]]; then
+                status_str="${G}● cargado${NC}"
+            else
+                status_str="${R}○ apagado${NC}"
+            fi
+            printf "%-15s %-25s %-20b\n" "$alias" "$srv" "$status_str"
+        done
+        echo ""
+        ;;
+
+    "subir")
+        REAL_SRV=$(get_service_name "$MODEL")
+        if [ -z "$REAL_SRV" ]; then
+            echo "Error: Modelo '$MODEL' no reconocido."
+            echo "Alias válidos: 1b, gemma, coder-raw, glm4, qwen-vl, 14b-n8n"
+            exit 1
+        fi
+        
+        echo "🧹 Limpiando caché de sistema para optimizar carga..."
+        sync && echo 3 > /proc/sys/vm/drop_caches
+        
+        echo "🚀 Iniciando $REAL_SRV..."
+        systemctl start "$REAL_SRV"
+        
+        port=$(grep -oP '(?<=--port )\d+' /etc/systemd/system/$REAL_SRV.service)
+        echo "⏳ Cargando en RAM (monitoreando puerto $port)..."
+        watch -n 2 "ps -o rss,command -p \$(lsof -t -i:$port)"
+        ;;
+
+    "bajar")
+        REAL_SRV=$(get_service_name "$MODEL")
+        if [ -z "$REAL_SRV" ]; then
+            echo "Error: Modelo '$MODEL' no reconocido."
+            exit 1
+        fi
+        
+        echo "⏏️ Bajando $REAL_SRV..."
+        systemctl stop "$REAL_SRV"
+        
+        echo "🧹 Liberando memoria residual..."
+        sync && echo 3 > /proc/sys/vm/drop_caches
+        echo "✅ RAM liberada correctamente."
+        ;;
+
+    "reiniciar")
+        REAL_SRV=$(get_service_name "$MODEL")
+        if [ -z "$REAL_SRV" ]; then
+            echo "Error: Modelo '$MODEL' no reconocido."
+            exit 1
+        fi
+        systemctl restart "$REAL_SRV"
+        echo "🔄 Reiniciado $REAL_SRV."
+        ;;
+
+    "estado")
+        /root/arquitectura_local_ia/check_ia_health.sh
+        ;;
+
+    "logs")
+        REAL_SRV=$(get_service_name "$MODEL")
+        if [ -z "$REAL_SRV" ]; then
+            echo "Error: Modelo '$MODEL' no reconocido."
+            exit 1
+        fi
+        journalctl -u "$REAL_SRV" -f
+        ;;
+
+    "test")
+        REAL_SRV=$(get_service_name "$MODEL")
+        if [ -z "$REAL_SRV" ]; then
+            echo "Error: Modelo '$MODEL' no reconocido."
+            exit 1
+        fi
+        port=$(grep -oP '(?<=--port )\d+' /etc/systemd/system/$REAL_SRV.service)
+        echo "🧪 Probando inferencia directa en puerto $port..."
+        curl -s http://127.0.0.1:$port/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d "{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"max_tokens\":16}" --max-time 60
+        
+        echo -e "\n🧪 Probando a través de LiteLLM (Puerto 4000)..."
+        # Obtener alias para LiteLLM
+        L_ALIAS=""
+        for key in "${!SRV_MAP[@]}"; do
+            if [[ "$REAL_SRV" == "${SRV_MAP[$key]}" ]]; then L_ALIAS=$key; break; fi
+        done
+        declare -A LITE_NAMES=( ["1b"]="qwen-general" ["gemma"]="codegemma" ["coder-raw"]="qwen-coder-raw" ["glm4"]="glm-4-flash" ["qwen-vl"]="qwen3-vl" ["14b-n8n"]="qwen-14b-n8n" )
+        
+        curl -s http://127.0.0.1:4000/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer sk-DAzu.0429*" \
+            -d "{\"model\": \"${LITE_NAMES[$L_ALIAS]}\", \"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}], \"max_tokens\":5}" --max-time 30
+        echo ""
+        ;;
+
+    *)
+        echo -e "Comandos disponibles para 'ia':"
+        echo -e "  ia lista            - Ver alias, servicios y estado"
+        echo -e "  ia estado           - Ver RAM total y TPS real"
+        echo -e "  ia subir [alias]    - Carga un modelo"
+        echo -e "  ia bajar [alias]    - Detiene y libera RAM"
+        echo -e "  ia reiniciar [nom]  - Reinicio rápido"
+        echo -e "  ia logs [alias]     - Ver salida (debug)"
+        echo -e "  ia test [alias]     - Prueba inferencia"
+        ;;
+esac
