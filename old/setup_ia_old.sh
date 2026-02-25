@@ -22,19 +22,30 @@ cd $MODELS_DIR
 download_verified() {
     local file=$1
     local url=$2
-    local expected_min_size=${3:-1000000}
+    local expected_min_size=${3:-1000000} # Por defecto 1MB
+    
     if [ ! -f "$file" ] || [ $(stat -c%s "$file") -lt $expected_min_size ]; then
         echo "Descargando $file..."
-        # USAR -o (minúscula) y siempre poner la URL entre comillas
-        curl -L -o "$file" "$url"
+        curl -L -O "$file" "$url"
     else
         echo "✅ $file ya existe y tiene un tamaño válido."
     fi
 }
 
+# Modelos Ligeros
+download_verified "qwen-1.7b.gguf" "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+download_verified "codegemma-2b.gguf" "https://huggingface.co/bartowski/codegemma-2b-GGUF/resolve/main/codegemma-2b-Q4_K_M.gguf"
 
 # Modelos Coder y Vision
+download_verified "qwen3-coder-abliterated.gguf" "https://huggingface.co/bartowski/huihui-ai_Qwen3-Coder-Next-abliterated-GGUF/resolve/main/huihui-ai_Qwen3-Coder-Next-abliterated-Q4_K_M.gguf?download=true"
 download_verified "glm-4-flash.gguf" "https://huggingface.co/unsloth/GLM-4.7-Flash-GGUF/resolve/main/GLM-4.7-Flash-Q4_K_M.gguf?download=true"
+download_verified "qwen3-vl-thinking.gguf" "https://huggingface.co/unsloth/Qwen3-VL-32B-Thinking-GGUF/resolve/main/Qwen3-VL-32B-Thinking-UD-Q6_K_XL.gguf?download=true"
+download_verified "qwen-14b-n8n.gguf" "https://huggingface.co/mbakgun/Qwen2.5-Coder-14B-n8n-Workflow-Generator/resolve/main/gguf/qwen25-coder-14b-n8n-q4_k_m.gguf?download=true"
+
+# Proyectores de Visión (Necesarios para procesar imágenes)
+# Usamos repositorios públicos verificados para evitar errores 401
+download_verified "ia-qwen-vl_mmproj.gguf" "https://huggingface.co/lmstudio-community/Qwen2-VL-7B-Instruct-GGUF/resolve/main/qwen2-vl-7b-instruct-mmproj-f16.gguf"
+download_verified "ia-glm4_mmproj.gguf" "https://huggingface.co/lmstudio-community/glm-4v-9b-GGUF/resolve/main/glm-4v-9b-mmproj-f16.gguf"
 
 echo "🏗️ 4. LiteLLM Setup..."
 cd /root

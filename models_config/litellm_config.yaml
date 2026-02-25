@@ -1,0 +1,13 @@
+model_list:
+  - "<<": !include ./glm-4.7.yml
+
+general_settings:
+  master_key: "sk-DAzu.0429*"
+  database_url: "postgresql://litellm_admin:litellm_pass@litellm-db:5432/litellm_db"
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  retry_policy:
+    num_retries: 3
+    expect_retry_after_header: true

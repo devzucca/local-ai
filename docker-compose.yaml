@@ -1,0 +1,35 @@
+services:
+  litellm-db:
+    image: postgres:16-alpine
+    container_name: litellm-db
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_DB=litellm_db
+      - POSTGRES_USER=litellm_admin
+      - POSTGRES_PASSWORD=litellm_pass
+    volumes:
+      - litellm_db_data:/var/lib/postgresql/data
+    restart: always
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm-proxy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "4000:4000"
+    depends_on:
+      - litellm-db
+    volumes:
+      # Montamos TODA la carpeta de configuración en /app/config
+      - /root/arquitectura_local_ia/models_config:/app/config
+    environment:
+      - DATABASE_URL=postgresql://litellm_admin:litellm_pass@litellm-db:5432/litellm_db
+      - LITELLM_MASTER_KEY=sk-DAzu.0429*
+    restart: always
+    # Apuntamos a la ruta dentro del nuevo volumen montado
+    command: [ "--config", "/app/config/litellm_config.yaml", "--port", "4000" ]
+
+volumes:
+  litellm_db_data:
