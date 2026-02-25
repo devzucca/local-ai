@@ -1,115 +1,119 @@
 #!/bin/bash
-# check_ia_health_v2.sh - Edición Xeon Dual-Socket Optimizado
+# check_ia_health.sh - Senior AI Infrastructure Diagnostics
+# Optimizado para Dual Xeon & LiteLLM Gateway
 
 # --- CONFIGURACIÓN ---
 MODELS_PATH="/root/arquitectura_local_ia/llama.cpp/models"
 LITELLM_PORT=4000
-declare -A MODELS=( ["8081"]="Qwen-1.7b" ["8082"]="CodeGemma-2b" ["8086"]="Qwen-Coder-Raw" ["8087"]="GLM-4-Flash" ["8088"]="Qwen3-VL-Thinking" ["8089"]="Qwen-14B-n8n" )
-declare -A FILES=( ["8081"]="qwen-1.7b.gguf" ["8082"]="codegemma-2b.gguf" ["8086"]="qwen3-coder-abliterated.gguf" ["8087"]="glm-4-flash.gguf" ["8088"]="qwen3-vl-thinking.gguf" ["8089"]="qwen-14b-n8n.gguf" )
+LITELLM_KEY="sk-DAzu.0429*"
 
-# Colores
-G='\033[0;32m' # Verde
-Y='\033[1;33m' # Amarillo
-R='\033[0;31m' # Rojo
-NC='\033[0m'    # Sin color
+# Definir servicios activos
+declare -A MODELS=( ["8087"]="GLM-4-Flash" )
+declare -A FILES=( ["8087"]="glm-4-flash.gguf" )
+declare -A LITE_MAP=( ["glm-4-flash"]="8087" )
 
-echo -e "\n${G}🖥️  [1/5] HARDWARE & CARGA DEL SISTEMA${NC}"
-echo "--------------------------------------------------------------------------------"
-# CPU Load y IO Wait real
+# Colores y Formato
+G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[0;34m'; NC='\033[0m'
+CHECK="✅"; BOLD="\033[1m"
+
+clear
+echo -e "${BOLD}${B}=== AI INFRASTRUCTURE HEALTH CHECK ===${NC}"
+echo -e "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')\n"
+
+# --- 1. HARDWARE ---
+echo -e "${G}${BOLD}[1/5] RECURSOS DEL SISTEMA${NC}"
+row_format="%-20s %-40s %-10s\n"
 read load1 load5 load15 <<< $(cut -d' ' -f1,2,3 /proc/loadavg)
-iowait=$(iostat -c | awk '/^ /{print $4}')
-echo -e "Load Average: $load1, $load5, $load15  |  ${Y}IO Wait: $iowait%${NC}"
-free -h | awk '/Mem/{printf "RAM: Total %s | Usada %s | Libre %s\n", $2, $3, $4}'
+# iowait robusto
+iowait=$(iostat -c 1 2 | awk '/^ /{wait=$4} END {print wait}')
+printf "$row_format" "CPU Load (1m/5m):" "$load1 / $load5" "L:$load1"
+printf "$row_format" "IO Wait:" "$iowait%" "[OK]"
+free -h | awk '/Mem/{printf "%-20s %-40s %-10s\n", "RAM Actual:", "Total: "$2" | Usada: "$3" | Libre: "$4, "[OK]"}'
 echo "--------------------------------------------------------------------------------"
 
-echo -e "\n${G}📊 [2/5] ESTADO DE DESPLIEGUE (RSS vs GGUF)${NC}"
-printf "%-8s %-20s %-12s %-10s %-12s\n" "PORT" "MODELO" "RAM(RSS)" "THREADS" "ESTADO"
+# --- 2. DOCKER SERVICES ---
+echo -e "\n${G}${BOLD}[2/5] ESTADO DE DOCKER (GATEWAY)${NC}"
+docker_format="%-20s %-15s %-25s %-10s\n"
+printf "$BOLD$docker_format$NC" "CONTAINER" "STATUS" "HEALTH" "PORTS"
+for container in litellm-proxy litellm-db; do
+    status=$(docker inspect -f '{{.State.Status}}' $container 2>/dev/null || echo "NON-EXISTENT")
+    health=$(docker inspect -f '{{.State.Health.Status}}' $container 2>/dev/null || echo "N/A")
+    ports=$(docker inspect -f '{{range $p, $conf := .NetworkSettings.Ports}}{{$p}} {{end}}' $container 2>/dev/null)
+    
+    color=$G; [ "$status" != "running" ] && color=$R
+    h_color=$G; [[ "$health" == "unhealthy" ]] && h_color=$R; [[ "$health" == "starting" ]] && h_color=$Y
+    
+    printf "$docker_format" "$container" "$(echo -e "${color}$status${NC}")" "$(echo -e "${h_color}$health${NC}")" "$ports"
+done
 echo "--------------------------------------------------------------------------------"
 
-for port in 8081 8082 8086 8087 8088 8089; do
+# --- 3. BACKEND (LLAMA.CPP) ---
+echo -e "\n${G}${BOLD}[3/5] BACKEND DE INFERENCIA (HOST)${NC}"
+printf "$BOLD%-8s %-20s %-12s %-10s %-12s$NC\n" "PORT" "MODELO" "RAM(RSS)" "THREADS" "ESTADO"
+for port in "${!MODELS[@]}"; do
     pid=$(lsof -t -i:$port 2>/dev/null)
     m_name=${MODELS[$port]}
     
     if [ -z "$pid" ]; then
         printf "%-8s %-20s %-12s %-10s ${R}%-12s${NC}\n" "$port" "$m_name" "0" "-" "OFFLINE"
     else
-        # Obtener hilos reales y RAM
         threads=$(ps -o nlwp= -p $pid | tr -d ' ')
         rss_mb=$(($(ps -o rss= -p $pid) / 1024))
-        
-        # Calcular % de carga basado en archivo
         f_path="$MODELS_PATH/${FILES[$port]}"
-        if [ -f "$f_path" ]; then
-            f_size_mb=$(($(stat -c%s "$f_path") / 1048576))
-            pct=$(( rss_mb * 100 / f_size_mb ))
-            [ $pct -gt 100 ] && pct=100
-            
-            if [ $pct -lt 95 ]; then status="${Y}⏳ $pct%${NC}"; else status="${G}✅ OK${NC}"; fi
-        else
-            status="${R}⚠ NO FILE${NC}"
+        status="${G}✅ READY${NC}"
+        
+        # Verificar si está cargando
+        if curl -s -f --max-time 1 http://127.0.0.1:$port/health | grep -q "Loading model"; then
+            status="${Y}⏳ LOADING${NC}"
         fi
         printf "%-8s %-20s %-12s %-10s %-12b\n" "$port" "$m_name" "${rss_mb}MB" "$threads" "$status"
     fi
 done
-
-echo -e "\n${G}🚀 [3/5] BENCHMARK DE INFERENCIA (Velocidad Real)${NC}"
 echo "--------------------------------------------------------------------------------"
-for port in 8081 8082 8086 8087 8088 8089; do
+
+# --- 4. BENCHMARKS ---
+echo -e "\n${G}${BOLD}[4/5] BENCHMARK DE INFERENCIA (DIRECTO)${NC}"
+for port in "${!MODELS[@]}"; do
     if (echo > /dev/tcp/127.0.0.1/$port) >/dev/null 2>&1; then
         start=$(date +%s.%N)
-        # Usamos 16 tokens (algunos modelos fallan con 10 por bugs internos de parseo)
-        res=$(curl -s http://127.0.0.1:$port/v1/chat/completions \
+        res=$(curl -s -f -X POST http://127.0.0.1:$port/v1/chat/completions \
             -H "Content-Type: application/json" \
-            -d '{"messages":[{"role":"user","content":"Hi"}],"max_tokens":16}' --max-time 60)
+            -d '{"messages":[{"role":"user","content":"Respond exactly with OK"}],"max_tokens":5}' --max-time 30)
         end=$(date +%s.%N)
         
         if [[ $res == *"choices"* ]]; then
             duration=$(echo "$end - $start" | bc)
-            # Extraer tokens reales generados para un cálculo preciso
             tokens=$(echo "$res" | jq -r '.usage.completion_tokens')
             tps=$(echo "scale=2; $tokens / $duration" | bc)
             echo -e "PORT $port [${MODELS[$port]}]: ${G}ONLINE${NC} -> ${Y}${tps} t/s${NC} (Latencia: ${duration}s)"
         else
-            echo -e "PORT $port [${MODELS[$port]}]: ${R}ERROR / TIMEOUT${NC}"
-            # Debug del error si no es timeout
-            if [ ! -z "$res" ]; then echo -e "   ${R}Respuesta: $res${NC}"; fi
+            echo -e "PORT $port [${MODELS[$port]}]: ${R}FAILED / RETRYING${NC}"
         fi
     fi
 done
 
-echo -e "\n${G}🌐 [4/5] GATEWAY LITELLM & ROUTING${NC}"
-echo "--------------------------------------------------------------------------------"
-if curl -s --max-time 5 http://127.0.0.1:$LITELLM_PORT/v1/models > /dev/null; then
-    echo -e "LiteLLM Proxy: ${G}ACTIVO${NC} en puerto $LITELLM_PORT"
-    printf "%-20s %-15s\n" "MODELO LITELLM" "ESTADO"
-    echo "--------------------------------------------------------------------------------"
-    
-    # Lista de modelos configurados en LiteLLM
-    declare -A LITE_MAP=( 
-        ["qwen-general"]="8081" ["codegemma"]="8082" ["qwen-coder-raw"]="8086" 
-        ["glm-4-flash"]="8087" ["qwen3-vl"]="8088" ["qwen-14b-n8n"]="8089" 
-    )
-
-    for m in "qwen-general" "codegemma" "qwen-coder-raw" "glm-4-flash" "qwen3-vl" "qwen-14b-n8n"; do
-        res_proxy=$(curl -s http://127.0.0.1:$LITELLM_PORT/v1/chat/completions \
+# --- 5. GATEWAY TEST ---
+echo -e "\n${G}${BOLD}[5/5] GATEWAY LITELLM END-TO-END${NC}"
+if curl -s --max-time 2 http://127.0.0.1:$LITELLM_PORT/health > /dev/null; then
+    for m in "${!LITE_MAP[@]}"; do
+        printf "Testing routing for %-20s " "$m..."
+        res_proxy=$(curl -s -X POST http://127.0.0.1:$LITELLM_PORT/v1/chat/completions \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer sk-DAzu.0429*" \
-            -d "{\"model\": \"$m\", \"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}], \"max_tokens\":5}" --max-time 30)
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -d "{\"model\": \"$m\", \"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}], \"max_tokens\":2}" --max-time 15)
         
         if [[ $res_proxy == *"choices"* ]]; then
-            printf "%-20s ${G}%-15s${NC}\n" "$m" "✅ OK"
+            echo -e "${G}✅ ROUTED${NC}"
         else
-            printf "%-20s ${R}%-15s${NC}\n" "$m" "❌ ERROR"
+            echo -e "${R}❌ FAILED${NC}"
+            # Debug info
+            if [[ $res_proxy == *"error"* ]]; then
+                echo -e "   Error: $(echo $res_proxy | jq -r '.error.message' 2>/dev/null || echo $res_proxy)"
+            fi
         fi
     done
 else
-    echo -e "LiteLLM Proxy: ${R}CAÍDO o SIN RESPUESTA${NC} (Revisa: systemctl status litellm)"
+    echo -e "LiteLLM Gateway: ${R}UNREACHABLE${NC} (Check: docker logs litellm-proxy)"
 fi
 
-echo -e "\n${G}🔑 [5/5] ACCESO & RESUMEN${NC}"
-echo "--------------------------------------------------------------------------------"
-IP_IA=$(hostname -I | awk '{print $1}')
-echo "Endpoint Local:  http://127.0.0.1:$LITELLM_PORT/v1"
-echo "Endpoint Red:    http://$IP_IA:$LITELLM_PORT/v1"
-echo "API KEY:          sk-DAzu.0429*"
-echo "--------------------------------------------------------------------------------"
+echo -e "\n${B}${BOLD}=== DIAGNÓSTICO FINALIZADO ===${NC}\n"

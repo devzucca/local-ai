@@ -10,6 +10,11 @@ services:
       - POSTGRES_PASSWORD=litellm_pass
     volumes:
       - litellm_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm_admin -d litellm_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     restart: always
 
   litellm:
@@ -20,15 +25,14 @@ services:
     ports:
       - "4000:4000"
     depends_on:
-      - litellm-db
+      litellm-db:
+        condition: service_healthy
     volumes:
-      # Montamos TODA la carpeta de configuración en /app/config
-      - /root/arquitectura_local_ia/models_config:/app/config
+      - ./models_config:/app/config
     environment:
       - DATABASE_URL=postgresql://litellm_admin:litellm_pass@litellm-db:5432/litellm_db
       - LITELLM_MASTER_KEY=sk-DAzu.0429*
     restart: always
-    # Apuntamos a la ruta dentro del nuevo volumen montado
     command: [ "--config", "/app/config/litellm_config.yaml", "--port", "4000" ]
 
 volumes:

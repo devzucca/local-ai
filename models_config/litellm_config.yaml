@@ -1,5 +1,20 @@
 model_list:
-  - "<<": !include ./glm-4.7.yml
+  - model_name: glm-4-flash
+    litellm_params:
+      model: openai/glm-4-flash
+      api_base: http://host.docker.internal:8087/v1
+      api_key: "not-needed"
+      timeout: 300
+      max_retries: 5
+      stream_options: {"include_usage": true}
+      custom_llm_provider: "openai"
+      extra_body:
+        parallel_tool_calls: false
+    model_info:
+      id: "glm-4-flash"
+      mode: "chat"
+      base_model: "glm-4"
+      supports_function_calling: true
 
 general_settings:
   master_key: "sk-DAzu.0429*"
